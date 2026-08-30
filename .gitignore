@@ -11,3 +11,7 @@ apt-repo/
 ../*.changes
 # packaging tmp
 tmp/
+
+# stray local build log
+tmp-build.log
+*.log
