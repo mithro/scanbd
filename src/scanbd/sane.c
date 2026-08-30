@@ -601,6 +601,69 @@ static void sane_find_matching_options(sane_thread_t* st, cfg_t* sec) {
 }
 
 
+// Force a refresh of the backend's cached button/event state, once per poll
+// pass, BEFORE the monitored options are read.
+//
+// Root cause (welland patch): the SANE pixma backend (Canon PIXMA / CanoScan,
+// e.g. the LiDE 400) only re-reads the scanner's physical button/event state
+// from the device as a side effect of an *ACTION* on its SANE_TYPE_BUTTON
+// option "button-update" -- and specifically ONLY on SANE_ACTION_SET_VALUE
+// (backend/pixma/pixma.c: case opt_button_update refreshes on SET_VALUE and
+// returns SANE_STATUS_INVAL on GET_VALUE). Reading button-1/button-2/target/
+// original with GET_VALUE returns a STALE cached word until that refresh runs.
+//
+// scanbd's poll loop otherwise only issues GET_VALUE, and only on the handful
+// of options that carry a configured action/function. It therefore never
+// drives the pixma refresh, so `target`/`button-*` never change and no press
+// is ever seen -- even though `scanimage -A`, which walks and reads every
+// option (including the low-index button options that trigger the internal
+// refresh) in one pass, reports presses correctly. Trying to work around this
+// purely in scanbd.conf (a `function button-update {}` read first) does NOT
+// help, because scanbd GETs it -- a no-op that returns INVAL -- instead of
+// SETting it.
+//
+// Fix: at the top of every poll pass, SET_VALUE the "button-update" option
+// (matched by name among the active, settable SANE_TYPE_BUTTON options). That
+// is the backend-documented "Update button state" trigger; it refreshes the
+// cached button/target words on the same open handle, so the subsequent
+// GET_VALUE reads observe the real press. Backends without a "button-update"
+// option are unaffected -- the option is simply not found and nothing is set;
+// no other button option is touched, so no unrelated action is fired.
+static void sane_refresh_button_state(sane_thread_t* st) {
+    assert(st != NULL);
+    for (int opt = 1; opt < st->num_of_options; opt += 1) {
+        const SANE_Option_Descriptor* odesc = sane_get_option_descriptor(st->h, opt);
+        if (odesc == NULL) {
+            continue;
+        }
+        if (odesc->type != SANE_TYPE_BUTTON) {
+            continue;
+        }
+        if (odesc->name == NULL) {
+            continue;
+        }
+        if (strcmp(odesc->name, "button-update") != 0) {
+            continue;
+        }
+        if (!SANE_OPTION_IS_ACTIVE(odesc->cap) ||
+            !SANE_OPTION_IS_SETTABLE(odesc->cap)) {
+            slog(SLOG_DEBUG, "button-update option %d not active/settable, skipping", opt);
+            break;
+        }
+        SANE_Word dummy = 0;
+        SANE_Int info = 0;
+        SANE_Status status = sane_control_option(st->h, opt, SANE_ACTION_SET_VALUE,
+                                                 &dummy, &info);
+        if (status != SANE_STATUS_GOOD) {
+            slog(SLOG_DEBUG, "button-update refresh (opt %d) returned: %s",
+                 opt, sane_strstatus(status));
+        } else {
+            slog(SLOG_DEBUG, "refreshed cached button state via button-update (opt %d)", opt);
+        }
+        break; // there is exactly one button-update option
+    }
+}
+
 // thread start funktion
 // TODO: refactor, this is awfull long!
 
@@ -769,6 +832,12 @@ static void* sane_poll(void* arg) {
     slog(SLOG_DEBUG, "polling thread for %s, after cancellation point", st->dev->name);
 
     slog(SLOG_DEBUG, "polling device %s", st->dev->name);
+
+        // Refresh backend-cached button/event state before reading the
+        // monitored options this pass (pixma button-fix; see
+        // sane_refresh_button_state above). No-op for backends without a
+        // "button-update" option.
+        sane_refresh_button_state(st);
 
         for(si = 0; si < st->num_of_options_with_scripts; si += 1) {
             const SANE_Option_Descriptor* odesc = NULL;
