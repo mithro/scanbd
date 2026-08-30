@@ -1,0 +1,13 @@
+# build artifacts
+*.o
+*.lo
+*.la
+.libs/
+.deps/
+built-debs/
+apt-repo/
+../*.deb
+../*.buildinfo
+../*.changes
+# packaging tmp
+tmp/

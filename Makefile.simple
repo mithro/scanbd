@@ -1,0 +1,110 @@
+# $Id: Makefile.simple 241 2017-04-19 07:53:25Z wimalopaan $
+#
+#  scanbd - KMUX scanner button daemon
+#
+#  Copyright (C) 2008 - 2016 Wilhelm Meier (wilhelm.meier@fh-kl.de)
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+#
+
+include Makefile.include
+
+#  Makefile.conf handling: we want this evaluated only once
+confisup2date := $(shell (if test -f Makefile.conf -a Makefile.conf -nt Makefile.conf.in ; then echo true; fi) )
+
+ifeq ($(confisup2date), true)
+
+# Makefile.conf is up to date
+#
+ifdef USE_SCANBUTTOND
+# first build scanbuttond backends, then the rest
+all := scanbuttond scanbd doc
+.PHONY: scanbuttond scanbd doc
+else
+# no need to build scanbuttond backends
+all := scanbd doc
+.PHONY: scanbd doc
+endif # USE_SCANBUTTOND
+
+else # confisup2date: Outdated Makefile.conf
+
+all := Makefile.conf
+.PHONY: Makefile.conf
+endif # confisup2date
+
+all: $(all)
+
+Makefile.conf: Makefile.conf.in
+	@if test -f Makefile.conf ; then \
+		mv Makefile.conf Makefile.conf.old; \
+		echo "Makefile.conf was outdated, it is saved as Makefile.conf.old, please copy your customizations over to the new Makefile.conf" ;\
+	fi; \
+	cp Makefile.conf.in Makefile.conf ; \
+	echo "A new Makefile.conf is generated, edit it first, then run gmake -f Makefile.simple again"
+
+scanbd:
+	$(MAKE) -f Makefile.simple -C src/scanbd all
+
+scanbuttond:
+	$(MAKE) -f Makefile.simple -C src/scanbuttond all
+
+test:
+	$(MAKE) -C src/test all
+
+doc:
+	 $(MAKE) -f Makefile.simple -C doc all
+
+clean:
+	$(MAKE) -f Makefile.simple -C src/scanbuttond clean
+	$(MAKE) -f Makefile.simple -C src/scanbd clean
+	$(MAKE) -f Makefile.simple -C doc clean
+
+ifdef USE_SANE
+install: scanbd
+else
+install: scanbuttond scanbd
+endif
+	echo "Make $(SCANBD_CFG_DIR)/scanner.d"
+	mkdir -p "$(SCANBD_CFG_DIR)"/scanner.d
+	echo "Copy files to $(SCANBD_CFG_DIR)"
+	cp conf/scanbd.conf "$(SCANBD_CFG_DIR)"
+	cp scripts/example.script "$(SCANBD_CFG_DIR)"
+	cp scripts/scanadf.script "$(SCANBD_CFG_DIR)"
+	cp scripts/test.script "$(SCANBD_CFG_DIR)"
+	echo "Copy scanner config files to $(SCANBD_CFG_DIR)/scanner.d"
+	cp conf/scanner.d/*.conf "$(SCANBD_CFG_DIR)"/scanner.d
+	echo "Copy scanbd to $(BIN_DIR)"
+	mkdir -p "$(BIN_DIR)"
+	cp src/scanbd/scanbd "$(BIN_DIR)"
+	rm -f "$(BIN_DIR)"/scanbm
+	ln -s scanbd "$(BIN_DIR)"/scanbm
+ifdef USE_SCANBUTTOND
+	echo "Copy scanbuttond backends to $(SCANBUTTOND_LIB_DIR)"
+	mkdir -p "$(SCANBUTTOND_LIB_DIR)"
+	cp src/scanbuttond/backends/*.so "$(SCANBUTTOND_LIB_DIR)" || /bin/true
+	cp src/scanbuttond/backends/meta.conf "$(SCANBUTTOND_LIB_DIR)" || /bin/true
+endif
+	if test -d "$(PREFIX)"/man/man8 ;\
+	then \
+	  cp doc/*.8 "$(PREFIX)"/man/man8 ;\
+        else \
+	  echo Do not know where manpages should go, please copy manually ;\
+	fi
+	if test -n "$(DBUS_INCLUDE)" ; \
+	then \
+	  echo "Copy scanbd_dbus.conf to /etc/dbus-1/system.d/"; \
+	  cp integration/scanbd_dbus.conf "$(DBUS_PREFIX)"/etc/dbus-1/system.d; \
+	fi
+	echo "Now please edit /etc/inetd.conf"

@@ -1,0 +1,91 @@
+# $Id: Makefile.conf.in 241 2017-04-19 07:53:25Z wimalopaan $
+#
+#  scanbd - KMUX scanner button daemon
+#
+#  Copyright (C) 2008 - 2012  Wilhelm Meier (wilhelm.wm.meier@googlemail.com)
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+#
+# Makefile.conf is generated from Makefile.conf.in
+ 
+# prefix
+# =======
+# The makefile will normally build and install scanbd in /usr/local
+# Set a different prefix here if you want a different prefix
+# PREFIX=/usr/local
+
+# bin_dir
+# ========
+# Programs are normally installed in <prefix>/sbin
+# Uncomment the following line to change the install location
+# BIN_DIR=/my/own/path
+
+# Scanbd configuration directory. Default: <prefix>/etc
+# Uncomment the following line to change the location
+# SCANBD_CFG_DIR=/etc
+
+# scanbuttond backends location
+# =============================
+# Backends are normally installed in <prefix>/lib/scanbuttond/backends
+# This path is not used, unless scanbuttond backends are enables, see 
+# below
+# Uncomment the following line to change the location
+# SCANBUTTOND_LIB_DIR=$(SCANBD_CFG_DIR)/scanbuttond/backends
+
+# Use scanbuttond backends or sane?
+# =================================
+# If you want to use scanbuttond backends instead of sane, uncomment the 
+# following line:
+# USE_SCANBUTTOND=1
+
+# Disable debugging code
+# ======================
+# If you want to disable debugging code, uncomment the following line
+# NDEBUG=1
+
+# Scanbd User
+# ===========
+# The Makefile will normally correctly set the userid for scanbd for you
+# Set the required userid here if you need to change it. This will
+# override the default
+# SCANBD_USER=myuser
+
+# Scanbd group
+# ============
+# The Makefile will normally correctly set the groupid for scanbd for you
+# Set the required userid here if you need to change it. This will
+# override the default
+# GROUP=mygroup
+
+# saned path
+# ==========
+# Path where saned lives. Defaults to /usr/sbin/saned
+# SANED_PATH=/usr/sbin/scanbd
+
+# Do we have UDEV?
+# Uncomment the following to enable UDEV
+# USE_LIBUDEV = yes
+# And this to disable UDEV
+# USE_LIBUDEV = 
+
+# Do we have HAL?
+# Uncomment the following to enable HAL
+# USE_HAL = yes
+# And this to disable HAL
+# USE_HAL = 
+
+# Set the DBUS_PREFIX so we can find includes and libs
+# Should normally not be required
+# DBUS_PREFIX = /usr/local

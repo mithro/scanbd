@@ -1,0 +1,58 @@
+Files
+=====
+
+This directory includes the file required specifically for systemd integration.
+This is a work in progress and may change as development progresses.
+
+The following unit files should be installed in /lib/systemd/system or
+/etc/systemd/system:
+
+scanbd.service
+scanbm@.service
+scanbm.socket
+
+The file scanbm@.service.sane-git is a replacement for scanbm@.service for the
+case where you use the git version of sane. That has a patch that adds full
+systemd support to saned. That will allow you to add SANE_DEBUG_<backendname>
+environment variables and use the system log or systemd-journalctl to watch
+the debugging outputs. If you want to use it, it needs to be copied to
+/lib/systemd/system/scanbm@.service. Systemd socket activation also requires
+the patch in scanbd added after release of version 1.3
+
+The following files goes into the dbus services directory 
+/usr/share/dbus-1/system-services:
+
+de.kmux.scanbd.server.service
+
+Now enable the units:
+systemctl enable scanbd.service
+systemctl enable scanbm.socket
+
+and start them:
+systemctl start scanbd.service
+systemctl start scanbm.socket
+
+Background
+==========
+
+Systemd setup
+-------------
+scanbd.service starts scanbd in polling mode to monitor the scanner for 
+button-presses.  It also defines the dbus service that we use to avoid double 
+activation.  The Environment directive allows for specification of the initial 
+environment. The sample contains the setting of SANE_CONFIG_DIR to point to 
+my scanbd configuration directory in /etc
+
+Scanbd.socket defines the port for saned.
+
+Scanbm@.service defines the settings for scanbd in manager mode. It gets
+activated when an application wants to scan and opens the saned port.
+
+Dbus setup for systemd
+----------------------
+de.kmux.scanbd.server.service tells dbus that it does not need to start a 
+process when a message for scanbd is received on the message bus, but that
+that responsibility is delegated to systemd.
+
+Please note that the scanbd_dbus.conf still needs to be installed in
+/etc/dbus-1/system.d

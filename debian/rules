@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+
+export DEB_CFLAGS_MAINT_APPEND = -Wno-error=clobbered -Wno-error=missing-field-initializers
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure -- --with-user=saned --with-group=scanner
+
+override_dh_install:
+	dh_install
+	$(RM) debian/*/etc/scanbd/*.script
+
+override_dh_installudev:
+	dh_installudev --name=saned --priority=99

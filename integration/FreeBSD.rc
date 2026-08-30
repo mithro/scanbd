@@ -1,0 +1,52 @@
+#!/bin/sh
+# $Id: FreeBSD.rc 218 2016-02-19 18:48:21Z wimalopaan $
+#
+#  scanbd - KMUX scanner button daemon
+#
+#  Copyright (C) 2008 - 2016  Wilhelm Meier (wilhelm.meier@fh-kl.de)
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+#
+# scanbd - scanner button daemon
+# Install this file as /usr/local/etc/rc.d/scanbd
+#
+# PROVIDE: scanbd
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+#
+# Add the following line to /etc/rc.conf[.local] to enable scanbd:
+#	scanbd_enable="YES"
+
+. /etc/rc.subr
+
+name=scanbd
+rcvar=scanbd_enable
+
+load_rc_config scanbd
+
+: ${scanbd_enable:="NO"}
+
+command="/usr/local/sbin/scanbd"
+
+start_precmd=scanbd_prestart
+
+scanbd_prestart()
+{
+export SANE_CONFIG_DIR=/usr/local/etc/scanbd
+}
+
+command_args=""
+
+run_rc_command "$1"

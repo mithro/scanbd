@@ -1,0 +1,10 @@
+scanbd (1.5.1+welland1) unstable; urgency=medium
+
+  * Welland patched build of scanbd 1.5.1 (Debian 1.5.1-7
+    sources, re-homed as a native package).
+  * Fix physical scanner button presses never firing an action with the
+    SANE pixma backend (Canon PIXMA / CanoScan, e.g. LiDE 400): the poll
+    loop now SET_VALUEs the backend's "button-update" option to refresh
+    the cached button/event state before reading the monitored options.
+
+ -- Tim 'mithro' Ansell <me@mith.ro>  Sun, 30 Aug 2026 11:59:47 +0930

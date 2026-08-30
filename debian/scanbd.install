@@ -1,0 +1,5 @@
+# Conflicts with systemd:
+#integration/sane-port   usr/share/reconf-inetd/
+debian/*/etc/scanbd/*.script usr/share/scanbd/scripts/
+integration/scanbd_dbus.conf    etc/dbus-1/system.d/
+integration/systemd/de.kmux.scanbd.server.service   usr/share/dbus-1/system-services/

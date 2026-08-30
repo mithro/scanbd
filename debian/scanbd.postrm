@@ -1,0 +1,25 @@
+#! /bin/sh
+# postrm script for scanbd
+
+set -e
+
+case "$1" in
+    purge)
+      find /etc/scanbd -maxdepth 1 -type l -name *.conf -delete
+      rm -f /etc/scanbd/dll.conf
+      if which update-inetd >/dev/null; then
+        update-inetd --remove 'sane-port'
+      fi
+    ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

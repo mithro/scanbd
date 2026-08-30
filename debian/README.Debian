@@ -1,0 +1,26 @@
+Troubleshooting
+===============
+
+Recently, a lot of work went into smoothening the scanbd experience on
+Debian. The program ought to simply work out of the box. Plug & Play.
+Here are a few things you can poke around to find out where things go
+wrong if they go wrong.
+
+1) attach scanner to your computer
+2) press one of the scanner buttons
+3) if things are good then you find some feedback in the syslog
+   "grep -e scanbd.*trigger /var/log/syslog"
+4) make sure that scanbd is actually running
+   "pidof scanbd" should return a number
+5) make sure that your scanner is recognized
+   "pidof scanbd && SANE_CONFIG_DIR=/etc/sane.d scanimage -L"
+   This should list your scanner supported by the net (!) backend
+6) stop scanbd
+7) test for direct scanbd support
+   "pidof scanbd && echo "scanbd is still running and shouldn't. Please retry." ; SANE_CONFIG_DIR=/etc/scanbd scanimage -L"
+   This should show you how scanbd addresses your scanner. It should NOT
+   be the net backend you saw earlier. This is due to the design of
+   scanbd and saned and how they interact.
+
+If you run into problems, be sure to let us know via the bug tracker so
+that we can improve the experience even further.

@@ -1,0 +1,51 @@
+#!/bin/sh
+# postinst script for scanbd
+
+set -e
+
+TEMPFILE=$(mktemp)
+cat >$TEMPFILE <<EOF
+# Upon first installation, this file is filled with all supported SANE backends available at that time.
+# This is done to avoid having to ask the user to choose a backend.  If you know what backend you want
+# to use you can improve performance by deleting or commenting out all other backends here.
+
+EOF
+
+case "$1" in
+    configure)
+	# link all supported SANE backends into the scanbd config directory
+	cd /etc
+	for file in sane.d/*.conf; do
+	  backend=$(basename -s .conf $file)
+	  case $backend in
+	    dll|dc210|dc240|dc25|dmc|gphoto2|net|saned|test|v4l)
+	      # do nothing in particular, this config file does not represent a scanbd-supported backend
+	      [ -L scanbd/$backend.conf ] && logger "$backend is not a scanbd-supported backend. You should consider removing the link /etc/scanbd/$backend.conf."
+	    ;;
+	    *)
+	      # create a link to the saned backend, unless the link or file already exists (possibly with customized content)
+	      [ -e scanbd/$backend.conf ] || ln -s ../$file scanbd/
+	      # keep tabs on what backends are available
+	      echo $backend >> $TEMPFILE
+	    ;;
+	  esac
+	done
+	mv -n $TEMPFILE /etc/scanbd/dll.conf
+	cd - > /dev/null
+	update-inetd --add 'sane-port stream tcp nowait saned /usr/sbin/scanbm scanbm'
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+	exit 1
+    ;;
+esac
+chmod +r /etc/scanbd/dll.conf
+rm -f $TEMPFILE
+
+#DEBHELPER#
+
+exit 0
