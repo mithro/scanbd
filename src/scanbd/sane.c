@@ -631,38 +631,144 @@ static void sane_find_matching_options(sane_thread_t* st, cfg_t* sec) {
 // GET_VALUE reads observe the real press. Backends without a "button-update"
 // option are unaffected -- the option is simply not found and nothing is set;
 // no other button option is touched, so no unrelated action is fired.
+// --- welland3: decode WHICH pixma button was pressed --------------------
+//
+// The pressed panel button is encoded in the read-only "target" option. For
+// the CanoScan LiDE 300/400 the SANE pixma backend
+// (backend/pixma/pixma_mp150.c handle_interrupt(), the LIDE400_PID/LIDE300_PID
+// branches) packs the raw interrupt byte buf[0x13] into the event word as
+//   s->events = PIXMA_EV_BUTTON1 | (buf[0x13] & 0x0f)   (BUTTON2 for 0x06),
+// and pixma.h's GET_EV_TARGET(ev) = ev & 0x0f, so update_button_state() stores
+// OVAL(target) = buf[0x13]:
+//   1 = copy   2 = auto-scan   3 = send   5 = start-PDF   6 = finish-PDF
+// (finish-PDF is the sole button-2 key; all others are button-1). original,
+// scan-resolution and document-type stay 0 for this model.
+//
+// button-1/button-2/target/original are soft_detect-only (READ-ONLY) and are
+// written ONLY on a button-1/2 transition -- which is also the only time pixma
+// sets SANE_INFO_RELOAD_OPTIONS. Off a transition they are stale/uninitialised
+// (the -363474928 garbage), so we read and trust them ONLY when the
+// button-update SET reports RELOAD.
+//
+// pixma latches button-1/2 at 1 until the device is reopened, so a long-lived
+// scanbd would otherwise only ever decode the FIRST press. After each decoded
+// event we reopen the device (scanbd already close/reopens around every
+// action, so this is a supported reset) to restore button-1/2 to their default
+// 0, so the next distinct press is a fresh transition that updates target.
+
+static int sane_find_option_by_name(sane_thread_t* st, const char* name) {
+    for (int opt = 1; opt < st->num_of_options; opt += 1) {
+        const SANE_Option_Descriptor* d = sane_get_option_descriptor(st->h, opt);
+        if (d != NULL && d->name != NULL && strcmp(d->name, name) == 0) {
+            return opt;
+        }
+    }
+    return -1;
+}
+
+// Read a scalar (INT/BOOL/BUTTON) option by index into *out. Returns true on a
+// good read; leaves *out untouched otherwise.
+static bool sane_read_word_option(sane_thread_t* st, int opt, long* out) {
+    if (opt < 0) {
+        return false;
+    }
+    const SANE_Option_Descriptor* d = sane_get_option_descriptor(st->h, opt);
+    if (d == NULL || !SANE_OPTION_IS_ACTIVE(d->cap)) {
+        return false;
+    }
+    SANE_Word w = 0;
+    if (sane_control_option(st->h, opt, SANE_ACTION_GET_VALUE, &w, NULL) != SANE_STATUS_GOOD) {
+        return false;
+    }
+    *out = (long)(SANE_Int)w;
+    return true;
+}
+
+// pixma LiDE 300/400 button code (OVAL(target)) -> panel button name.
+static const char* pixma_lide_button_name(long target) {
+    switch (target) {
+        case 1: return "copy";
+        case 2: return "auto-scan";
+        case 3: return "send";
+        case 5: return "start-pdf";
+        case 6: return "finish-pdf";   // the button-2 key (stop / finish PDF)
+        default: return "unknown";
+    }
+}
+
 static void sane_refresh_button_state(sane_thread_t* st) {
     assert(st != NULL);
-    for (int opt = 1; opt < st->num_of_options; opt += 1) {
-        const SANE_Option_Descriptor* odesc = sane_get_option_descriptor(st->h, opt);
-        if (odesc == NULL) {
-            continue;
-        }
-        if (odesc->type != SANE_TYPE_BUTTON) {
-            continue;
-        }
-        if (odesc->name == NULL) {
-            continue;
-        }
-        if (strcmp(odesc->name, "button-update") != 0) {
-            continue;
-        }
-        if (!SANE_OPTION_IS_ACTIVE(odesc->cap) ||
-            !SANE_OPTION_IS_SETTABLE(odesc->cap)) {
-            slog(SLOG_DEBUG, "button-update option %d not active/settable, skipping", opt);
+
+    int bu = sane_find_option_by_name(st, "button-update");
+    if (bu < 0) {
+        return;   // not a pixma-style backend; nothing to refresh
+    }
+    const SANE_Option_Descriptor* bud = sane_get_option_descriptor(st->h, bu);
+    if (bud == NULL || bud->type != SANE_TYPE_BUTTON ||
+        !SANE_OPTION_IS_ACTIVE(bud->cap) || !SANE_OPTION_IS_SETTABLE(bud->cap)) {
+        slog(SLOG_DEBUG, "button-update option %d not active/settable, skipping", bu);
+        return;
+    }
+
+    // welland1: SET button-update refreshes the backend's cached button/event
+    // state on this handle. welland3: capture 'info' to learn whether a NEW
+    // button transition occurred this poll.
+    SANE_Word dummy = 0;
+    SANE_Int info = 0;
+    SANE_Status status = sane_control_option(st->h, bu, SANE_ACTION_SET_VALUE,
+                                             &dummy, &info);
+    if (status != SANE_STATUS_GOOD) {
+        slog(SLOG_DEBUG, "button-update refresh (opt %d) returned: %s",
+             bu, sane_strstatus(status));
+        return;
+    }
+
+    if (!(info & SANE_INFO_RELOAD_OPTIONS)) {
+        // No new button transition this poll: the button/target/original words
+        // are stale/uninitialised, so we deliberately do NOT read or report
+        // them (this is what stops the -363474928 garbage being logged).
+        slog(SLOG_DEBUG, "button-update refresh (opt %d): no new event this poll", bu);
+        return;
+    }
+
+    // A genuine button transition happened: every button-related option is
+    // freshly valid right now. Read them all and decode.
+    long target = -1, original = -1, button1 = -1, button2 = -1;
+    long scanres = -1, doctype = -1;
+    sane_read_word_option(st, sane_find_option_by_name(st, "target"),          &target);
+    sane_read_word_option(st, sane_find_option_by_name(st, "original"),        &original);
+    sane_read_word_option(st, sane_find_option_by_name(st, "button-1"),        &button1);
+    sane_read_word_option(st, sane_find_option_by_name(st, "button-2"),        &button2);
+    sane_read_word_option(st, sane_find_option_by_name(st, "scan-resolution"), &scanres);
+    sane_read_word_option(st, sane_find_option_by_name(st, "document-type"),   &doctype);
+
+    // SLOG_ERROR so it is visible without -d7 (scanbd logs "trigger action" at
+    // ERROR too). One rich line per real press -> a single press round reveals
+    // the discriminator.
+    slog(SLOG_ERROR,
+         "pixma button EVENT on %s: decoded=%s | target=%ld original=%ld "
+         "button-1=%ld button-2=%ld scan-resolution=%ld document-type=%ld",
+         st->dev->name, pixma_lide_button_name(target), target, original,
+         button1, button2, scanres, doctype);
+
+    // Reset the pixma button-1/2 latch by reopening, so the NEXT distinct press
+    // is a fresh transition that updates 'target'. Mirrors scanbd's own
+    // close/reopen around actions.
+    sane_close(st->h);
+    st->h = NULL;
+    for (int attempt = 1; ; attempt += 1) {
+        status = sane_open(st->dev->name, &st->h);
+        if (status == SANE_STATUS_GOOD) {
+            slog(SLOG_DEBUG, "reopened %s to reset pixma button latch", st->dev->name);
             break;
         }
-        SANE_Word dummy = 0;
-        SANE_Int info = 0;
-        SANE_Status status = sane_control_option(st->h, opt, SANE_ACTION_SET_VALUE,
-                                                 &dummy, &info);
-        if (status != SANE_STATUS_GOOD) {
-            slog(SLOG_DEBUG, "button-update refresh (opt %d) returned: %s",
-                 opt, sane_strstatus(status));
-        } else {
-            slog(SLOG_DEBUG, "refreshed cached button state via button-update (opt %d)", opt);
+        slog(SLOG_ERROR, "reopen of %s after button event failed (attempt %d): %s",
+             st->dev->name, attempt, sane_strstatus(status));
+        if (attempt >= 5) {
+            slog(SLOG_ERROR, "giving up reopening %s; abandoning its polling thread",
+                 st->dev->name);
+            pthread_exit(NULL);
         }
-        break; // there is exactly one button-update option
     }
 }
 

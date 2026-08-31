@@ -24,7 +24,7 @@ CHANGELOG = REPO / "debian" / "changelog"
 SOURCE = "scanbd"
 # upstream release this repo packages (Debian's scanbd 1.5.1-7 sources)
 UPSTREAM_VERSION = "1.5.1"
-WELLAND_REV = "2"
+WELLAND_REV = "3"
 MAINTAINER = "Tim 'mithro' Ansell <me@mith.ro>"
 
 
@@ -54,7 +54,15 @@ def write_changelog():
         f"    the cached button/event state before reading the monitored options.\n"
         f"  * Fix the debug poll log printing a garbage pointer instead of the\n"
         f"    option's real value: it passed the whole sane_opt_value_t struct to\n"
-        f"    %d; now dereferenced by SANE type (INT/BOOL/BUTTON, FIXED, STRING).\n\n"
+        f"    %d; now dereferenced by SANE type (INT/BOOL/BUTTON, FIXED, STRING).\n"
+        f"  * Decode WHICH LiDE 300/400 button was pressed: on a real button\n"
+        f"    transition (SANE_INFO_RELOAD_OPTIONS from the button-update SET),\n"
+        f"    read and log all button options and decode 'target'\n"
+        f"    (1=copy 2=auto-scan 3=send 5=start-pdf 6=finish-pdf). Read those\n"
+        f"    read-only words ONLY when fresh, so stale/uninitialised garbage\n"
+        f"    (-363474928) is no longer reported. Reopen the device after each\n"
+        f"    event to clear pixma's button-1/2 latch so every distinct press\n"
+        f"    decodes.\n\n"
         f" -- {MAINTAINER}  {date}\n"
     )
 
