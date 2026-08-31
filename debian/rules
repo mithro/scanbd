@@ -6,7 +6,12 @@ export DEB_CFLAGS_MAINT_APPEND = -Wno-error=clobbered -Wno-error=missing-field-i
 	dh $@
 
 override_dh_auto_configure:
-	dh_auto_configure -- --with-user=saned --with-group=scanner
+	# welland4 links the event-driven USB button path against libusb-1.0.
+	# The default (USE_SANE) configure path leaves LIBUSB_LIBS empty but
+	# AM_LDFLAGS already references $(LIBUSB_LIBS), so inject it here (Debian
+	# does not link --as-needed, so a lib before the objects still resolves).
+	dh_auto_configure -- --with-user=saned --with-group=scanner \
+		LIBUSB_LIBS="-lusb-1.0"
 
 override_dh_install:
 	dh_install

@@ -24,7 +24,7 @@ CHANGELOG = REPO / "debian" / "changelog"
 SOURCE = "scanbd"
 # upstream release this repo packages (Debian's scanbd 1.5.1-7 sources)
 UPSTREAM_VERSION = "1.5.1"
-WELLAND_REV = "3"
+WELLAND_REV = "4"
 MAINTAINER = "Tim 'mithro' Ansell <me@mith.ro>"
 
 
@@ -62,7 +62,15 @@ def write_changelog():
         f"    read-only words ONLY when fresh, so stale/uninitialised garbage\n"
         f"    (-363474928) is no longer reported. Reopen the device after each\n"
         f"    event to clear pixma's button-1/2 latch so every distinct press\n"
-        f"    decodes.\n\n"
+        f"    decodes.\n"
+        f"  * Event-driven front-button detection: for a pixma device exposing a\n"
+        f"    button interrupt-IN endpoint on interface 0, block on that endpoint\n"
+        f"    with libusb (32-byte packet: byte[4]==0x01 press flag, byte[19]=code\n"
+        f"    1/2/3/5/6) instead of polling SANE -- instant, no polling, all five\n"
+        f"    buttons distinguishable. On an event, release interface 0 (so the\n"
+        f"    action's scan can open the scanner) and fire the configured target\n"
+        f"    action with SCANBD_TARGET=<code>, then reclaim. Devices without such\n"
+        f"    an endpoint keep the welland3 SANE poll. Links libusb-1.0.\n\n"
         f" -- {MAINTAINER}  {date}\n"
     )
 

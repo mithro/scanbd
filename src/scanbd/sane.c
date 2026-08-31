@@ -23,6 +23,8 @@
 #include "scanbd.h"
 #include "scanbd_dbus.h"
 
+#include <libusb-1.0/libusb.h>
+
 #define CANCEL_TEST
 
 // all programm-global sane functions use this mutex to avoid races
@@ -772,6 +774,388 @@ static void sane_refresh_button_state(sane_thread_t* st) {
     }
 }
 
+// ======================================================================
+// welland4: event-driven front-button detection via the raw USB interrupt
+// endpoint (pixma / CanoScan LiDE), replacing the SANE-option poll.
+//
+// The SANE pixma option path (welland1-3) can only observe a button on a
+// button-1/2 transition and latches until reopen. The scanner ALSO emits the
+// same event, cleanly and instantly, on a USB interrupt-IN endpoint on
+// interface 0: a 32-byte packet where buf[4]==0x01 flags a press and buf[19]
+// carries the SAME per-button code as the SANE `target` option
+//   1=copy 2=auto-scan 3=send 5=start-pdf 6=finish-pdf
+// (measured on rpi5-scanner AND confirmed against pixma_mp150.c
+//  handle_interrupt(): buf[0x13] is exactly byte 19). So for such a device we
+// BLOCK on that endpoint instead of polling SANE -- instant, no polling, all 5
+// buttons distinguishable.
+//
+// Device sharing (the crux): a libusb claim of interface 0 and a pixma/saned
+// scan cannot coexist. So we hold interface 0 while waiting, and on a decoded
+// event RELEASE it (close the libusb handle) BEFORE running the action -- so
+// the action's own scan (direct pixma or via saned) can open the scanner --
+// then RECLAIM interface 0 afterwards. This mirrors the proven PoC and
+// scanbd's own close/reopen around actions.
+//
+// Gated hard: only a device whose SANE name is "pixma:VVVVPPPP_..." AND whose
+// USB descriptor actually exposes an interrupt-IN endpoint on interface 0 takes
+// this path; every other device falls back to the welland3 SANE poll.
+
+// Parse "pixma:04A91912_498A13" -> vid=0x04a9 pid=0x1912.
+static bool pixma_parse_usb_ids(const char* sane_name, uint16_t* vid, uint16_t* pid) {
+    if (sane_name == NULL) {
+        return false;
+    }
+    const char* p = strstr(sane_name, "pixma:");
+    if (p == NULL) {
+        return false;
+    }
+    p += strlen("pixma:");
+    unsigned int v = 0, d = 0;
+    if (sscanf(p, "%4x%4x", &v, &d) != 2) {
+        return false;
+    }
+    *vid = (uint16_t)v;
+    *pid = (uint16_t)d;
+    return true;
+}
+
+// If interface 0 of dev exposes an interrupt-IN endpoint, return its address,
+// else 0.
+static uint8_t pixma_find_int_in_ep(libusb_device* dev) {
+    struct libusb_config_descriptor* cfg = NULL;
+    if (libusb_get_active_config_descriptor(dev, &cfg) != 0 || cfg == NULL) {
+        return 0;
+    }
+    uint8_t ep = 0;
+    if (cfg->bNumInterfaces > 0) {
+        const struct libusb_interface* itf = &cfg->interface[0];
+        for (int a = 0; a < itf->num_altsetting && ep == 0; a += 1) {
+            const struct libusb_interface_descriptor* id = &itf->altsetting[a];
+            for (int e = 0; e < id->bNumEndpoints; e += 1) {
+                const struct libusb_endpoint_descriptor* ed = &id->endpoint[e];
+                if ((ed->bEndpointAddress & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_IN &&
+                    (ed->bmAttributes & LIBUSB_TRANSFER_TYPE_MASK) == LIBUSB_TRANSFER_TYPE_INTERRUPT) {
+                    ep = ed->bEndpointAddress;
+                    break;
+                }
+            }
+        }
+    }
+    libusb_free_config_descriptor(cfg);
+    return ep;
+}
+
+// One-shot probe: does a vid:pid device with an interface-0 interrupt-IN
+// endpoint exist right now? Used to decide whether to take the interrupt path.
+static bool pixma_has_int_endpoint(uint16_t vid, uint16_t pid) {
+    libusb_context* ctx = NULL;
+    if (libusb_init(&ctx) != 0) {
+        return false;
+    }
+    libusb_device** list = NULL;
+    ssize_t n = libusb_get_device_list(ctx, &list);
+    bool found = false;
+    for (ssize_t i = 0; i < n && !found; i += 1) {
+        struct libusb_device_descriptor dd;
+        if (libusb_get_device_descriptor(list[i], &dd) != 0) {
+            continue;
+        }
+        if (dd.idVendor == vid && dd.idProduct == pid && pixma_find_int_in_ep(list[i]) != 0) {
+            found = true;
+        }
+    }
+    if (n >= 0) {
+        libusb_free_device_list(list, 1);
+    }
+    libusb_exit(ctx);
+    return found;
+}
+
+// Open the pixma device by vid/pid, auto-detach the kernel driver, claim
+// interface 0. Returns the handle and its interrupt-IN endpoint via *ep, or
+// NULL if not present/claimable.
+static libusb_device_handle* pixma_open_claim(libusb_context* ctx,
+                                              uint16_t vid, uint16_t pid,
+                                              uint8_t* ep) {
+    libusb_device** list = NULL;
+    ssize_t n = libusb_get_device_list(ctx, &list);
+    if (n < 0) {
+        return NULL;
+    }
+    libusb_device_handle* h = NULL;
+    for (ssize_t i = 0; i < n; i += 1) {
+        struct libusb_device_descriptor dd;
+        if (libusb_get_device_descriptor(list[i], &dd) != 0) {
+            continue;
+        }
+        if (dd.idVendor != vid || dd.idProduct != pid) {
+            continue;
+        }
+        uint8_t found = pixma_find_int_in_ep(list[i]);
+        if (found == 0) {
+            continue;
+        }
+        if (libusb_open(list[i], &h) != 0) {
+            h = NULL;
+            continue;
+        }
+        libusb_set_auto_detach_kernel_driver(h, 1);
+        if (libusb_claim_interface(h, 0) != 0) {
+            libusb_close(h);
+            h = NULL;
+            continue;
+        }
+        *ep = found;
+        break;
+    }
+    libusb_free_device_list(list, 1);
+    return h;
+}
+
+// pthread cancellation cleanup for the interrupt watcher: on cancel (scanbd
+// shutdown, SIGHUP reload, or SIGUSR1 yield-to-saned) release interface 0 and
+// tear down libusb so the scanner is freed and nothing is leaked/stuck-claimed.
+// Members live in the caller's stack struct (not registers), so they are safe
+// across the cleanup longjmp.
+typedef struct {
+    libusb_context* ctx;
+    libusb_device_handle* h;
+} pixma_watch_res_t;
+static void pixma_watch_cleanup(void* arg) {
+    pixma_watch_res_t* r = (pixma_watch_res_t*)arg;
+    if (r->h != NULL) {
+        libusb_release_interface(r->h, 0);
+        libusb_close(r->h);
+        r->h = NULL;
+    }
+    if (r->ctx != NULL) {
+        libusb_exit(r->ctx);
+        r->ctx = NULL;
+    }
+}
+
+// Run the configured action script for a decoded button with the SAME env
+// contract scanbd's SANE path presents: <target-env>=<code> plus SCANBD_DEVICE
+// / SCANBD_ACTION and PATH/PWD/USER/HOME. Interface 0 MUST already be released
+// before calling this (the script opens/scans the device). Mirrors scanbd's own
+// fork/seteuid/execle action exec.
+static void pixma_run_action(const char* device, const char* script,
+                             const char* action_name, const char* dev_env,
+                             const char* act_env, const char* target_env,
+                             long code, int settle_ms) {
+    if (script == NULL || strlen(script) == 0 ||
+        strcmp(script, SCANBD_NULL_STRING) == 0) {
+        slog(SLOG_INFO, "pixma button: no action script configured for target; "
+             "decoded code=%ld only", code);
+        return;
+    }
+    char* script_abs = make_script_path_abs(script);
+    assert(script_abs != NULL);
+
+    const int N = 8;  // target, device, action, PATH, PWD, USER, HOME, sentinel
+    char** env = calloc(N, sizeof(char*));
+    assert(env != NULL);
+    for (int i = 0; i < N; i += 1) {
+        env[i] = calloc(NAME_MAX + 1, sizeof(char));
+        assert(env[i] != NULL);
+    }
+    int e = 0;
+    snprintf(env[e++], NAME_MAX, "%s=%ld", target_env ? target_env : "SCANBD_TARGET", code);
+    snprintf(env[e++], NAME_MAX, "%s=%s", dev_env ? dev_env : "SCANBD_DEVICE", device);
+    snprintf(env[e++], NAME_MAX, "%s=%s", act_env ? act_env : "SCANBD_ACTION",
+             action_name ? action_name : "button");
+    {
+        const char* v = getenv("PATH");
+        snprintf(env[e++], NAME_MAX, "PATH=%s", v ? v : "/usr/sbin:/usr/bin:/sbin:/bin");
+    }
+    {
+        char buf[PATH_MAX];
+        const char* v = getcwd(buf, sizeof(buf) - 1);
+        snprintf(env[e++], NAME_MAX, "PWD=%s", v ? v : "/");
+    }
+    {
+        struct passwd* pw = getpwuid(geteuid());
+        snprintf(env[e++], NAME_MAX, "USER=%s", pw ? pw->pw_name : "root");
+    }
+    {
+        struct passwd* pw = getpwuid(geteuid());
+        snprintf(env[e++], NAME_MAX, "HOME=%s", pw ? pw->pw_dir : "/root");
+    }
+    env[e] = NULL;
+
+    if (settle_ms > 0) {
+        usleep(settle_ms * 1000);
+    }
+    slog(SLOG_ERROR, "pixma button EVENT on %s: running action '%s' (%s=%ld): %s",
+         device, action_name ? action_name : "button",
+         target_env ? target_env : "SCANBD_TARGET", code, script_abs);
+
+    pid_t cpid = fork();
+    if (cpid < 0) {
+        slog(SLOG_ERROR, "Can't fork for action: %s", strerror(errno));
+    } else if (cpid > 0) {
+        int status;
+        if (waitpid(cpid, &status, 0) < 0) {
+            slog(SLOG_ERROR, "waitpid: %s", strerror(errno));
+        } else if (WIFEXITED(status)) {
+            slog(SLOG_INFO, "action %s exited with status %d", script_abs, WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+            slog(SLOG_INFO, "action %s signalled %d", script_abs, WTERMSIG(status));
+        }
+    } else {  // child: mirror scanbd's privilege handling, then exec
+        uid_t euid = geteuid();
+        gid_t egid = getegid();
+        if (seteuid(0) < 0 || setegid(0) < 0 || setgid(egid) < 0 || setuid(euid) < 0) {
+            slog(SLOG_ERROR, "drop-priv for action failed: %s", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+        execle(script_abs, script_abs, NULL, env);
+        slog(SLOG_ERROR, "execle %s: %s", script_abs, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < N - 1; i += 1) {
+        free(env[i]);
+    }
+    free(env);
+    free(script_abs);
+}
+
+// The event-driven watch loop for a pixma device. Blocks (with a modest
+// timeout) on the interrupt endpoint; on each decoded press releases interface
+// 0, runs the action, and reclaims. Runs until the polling thread is cancelled.
+// Returns early only if libusb cannot be initialised (caller falls back to the
+// SANE poll).
+//
+// LOCKING / CANCELLATION discipline -- mirrors scanbd's own poll loop so it
+// coexists with stop_sane_threads() (which locks st->mutex, waits while
+// st->triggered, then pthread_cancel()s this thread on shutdown / SIGHUP reload
+// / SIGUSR1 yield-to-saned):
+//   * called with st->mutex HELD and sane_poll's mutex cleanup handler
+//     installed; st->mutex is a NON-recursive mutex;
+//   * cancellation stays DISABLED except at explicit testcancel points, and at
+//     every such point st->mutex is HELD, so the mutex cleanup handler unlocks
+//     it exactly once on cancel;
+//   * st->mutex is RELEASED (cancel disabled) across the blocking interrupt
+//     read and across the action, so stop_sane_threads can acquire it; a modest
+//     read timeout bounds how long it waits (still event-driven: it blocks on
+//     the endpoint and fires instantly on a press, ~zero CPU);
+//   * st->triggered is set around the action so a concurrent
+//     stop_sane_threads / saned scan waits for the action to finish, exactly
+//     like the SANE action path;
+//   * on cancel the libusb cleanup handler releases interface 0, freeing the
+//     scanner for saned.
+#define PIXMA_INT_READ_TIMEOUT_MS 700   // bounds yield latency, not a poll rate
+static void pixma_interrupt_watch(sane_thread_t* st, uint16_t vid, uint16_t pid,
+                                  const char* script, const char* action_name,
+                                  const char* dev_env, const char* act_env,
+                                  const char* target_env, int settle_ms) {
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+
+    pixma_watch_res_t res = { NULL, NULL };
+    if (libusb_init(&res.ctx) != 0) {
+        slog(SLOG_ERROR, "libusb_init failed for %s; falling back to SANE poll",
+             st->dev->name);
+        return;   // st->mutex still held, as on entry
+    }
+
+    // Single cleanup handler for the whole loop: releases the current handle
+    // (res.h) and tears down libusb (res.ctx) on cancel. Lexically balanced
+    // with the pop below (which is unreachable -- the loop only exits via
+    // cancellation -- but the macros must be paired in the same block).
+    pthread_cleanup_push(pixma_watch_cleanup, &res);
+    int backoff = 1;
+    while (true) {
+        // --- cancellation point: st->mutex HELD ---
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+        pthread_testcancel();
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+
+        uint8_t ep = 0;
+        res.h = pixma_open_claim(res.ctx, vid, pid, &ep);
+        if (res.h == NULL) {
+            slog(SLOG_WARN, "pixma %04x:%04x interrupt endpoint not claimable; "
+                 "retry in %ds", vid, pid, backoff);
+            pthread_mutex_unlock(&st->mutex);   // release while waiting
+            sleep(backoff);
+            pthread_mutex_lock(&st->mutex);
+            backoff = (backoff < 15) ? backoff * 2 : 15;
+            continue;
+        }
+        backoff = 1;
+        slog(SLOG_INFO, "welland4: claimed interface 0 on %s, blocking on EP 0x%02x "
+             "(event-driven, %dms read window)", st->dev->name, ep,
+             PIXMA_INT_READ_TIMEOUT_MS);
+
+        bool reconnect = false;
+        while (!reconnect) {
+            // --- cancellation point: st->mutex HELD, res.h valid ---
+            pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+            pthread_testcancel();
+            pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+
+            unsigned char buf[64];
+            int transferred = 0;
+            // block on the endpoint with the mutex RELEASED so stop_sane_threads
+            // can grab it; the timeout only bounds yield latency.
+            pthread_mutex_unlock(&st->mutex);
+            int rc = libusb_interrupt_transfer(res.h, ep, buf, sizeof(buf),
+                                               &transferred, PIXMA_INT_READ_TIMEOUT_MS);
+            pthread_mutex_lock(&st->mutex);
+
+            if (rc == LIBUSB_ERROR_TIMEOUT) {
+                continue;  // no event this window; loop (blocks on the endpoint)
+            }
+            if (rc == LIBUSB_ERROR_NO_DEVICE || rc == LIBUSB_ERROR_IO ||
+                rc == LIBUSB_ERROR_PIPE) {
+                slog(SLOG_WARN, "interrupt read on %s: %s; reconnecting",
+                     st->dev->name, libusb_error_name(rc));
+                reconnect = true;
+                break;
+            }
+            if (rc != 0) {
+                slog(SLOG_WARN, "interrupt read: %s", libusb_error_name(rc));
+                continue;
+            }
+            if (transferred <= 19 || buf[4] != 0x01) {
+                slog(SLOG_DEBUG, "non-press/short interrupt (len=%d byte4=0x%02x)",
+                     transferred, transferred > 4 ? buf[4] : 0);
+                continue;
+            }
+            long code = buf[19];
+            const char* name = pixma_lide_button_name(code);
+            slog(SLOG_ERROR, "pixma button EVENT on %s: decoded=%s code=%ld "
+                 "(byte19, via EP 0x%02x)", st->dev->name, name, code, ep);
+            if (code < 1 || code > 6 || strcmp(name, "unknown") == 0) {
+                slog(SLOG_WARN, "unmapped pixma button code %ld; ignoring", code);
+                continue;
+            }
+            // Mark active so a concurrent stop_sane_threads / saned scan waits
+            // for us, release interface 0 so the action's own scan can open the
+            // scanner, run the action, then reclaim.
+            st->triggered = true;
+            libusb_release_interface(res.h, 0);
+            libusb_close(res.h);
+            res.h = NULL;                      // handle freed
+            pthread_mutex_unlock(&st->mutex);  // release across the action
+            pixma_run_action(st->dev->name, script, action_name,
+                             dev_env, act_env, target_env, code, settle_ms);
+            pthread_mutex_lock(&st->mutex);
+            st->triggered = false;
+            if (pthread_cond_broadcast(&st->cv) < 0) {   // wake stop_sane_threads
+                slog(SLOG_ERROR, "pthread_cond_broadcast failed");
+            }
+            reconnect = true;                  // reopen + reclaim interface 0
+        }
+        if (res.h != NULL) {
+            libusb_release_interface(res.h, 0);
+            libusb_close(res.h);
+            res.h = NULL;
+        }
+    }
+    pthread_cleanup_pop(0);   // unreachable; paired with the push above
+}
+
 // thread start funktion
 // TODO: refactor, this is awfull long!
 
@@ -920,7 +1304,62 @@ static void* sane_poll(void* arg) {
         timeout = C_TIMEOUT_DEF;
     }
     slog(SLOG_DEBUG, "timeout: %d ms", timeout);
-    
+
+    // welland4: if this is a pixma device that exposes a button interrupt
+    // endpoint on interface 0, use the event-driven interrupt path instead of
+    // the SANE-option poll. Resolve the target action's script/name and the
+    // env-var names from the config scanbd already parsed for this device, then
+    // hand interface 0 to libusb (release the SANE handle first).
+    {
+        uint16_t vid = 0, pid = 0;
+        int target_optnum = sane_find_option_by_name(st, "target");
+        if (target_optnum > 0 &&
+            pixma_parse_usb_ids(st->dev->name, &vid, &pid) &&
+            pixma_has_int_endpoint(vid, pid)) {
+
+            const char* script = NULL;
+            const char* action_name = NULL;
+            for (int k = 0; k < st->num_of_options_with_scripts; k += 1) {
+                if (st->opts[k].number == target_optnum) {
+                    script = st->opts[k].script;
+                    action_name = st->opts[k].action_name;
+                    break;
+                }
+            }
+            const char* target_env = "SCANBD_TARGET";
+            for (int j = 0; j < st->num_of_options_with_functions; j += 1) {
+                if (st->functions[j].number == target_optnum &&
+                    st->functions[j].env != NULL) {
+                    target_env = st->functions[j].env;
+                    break;
+                }
+            }
+            cfg_t* global_envs = cfg_getsec(cfg_sec_global, C_ENVIRONMENT);
+            const char* dev_env = global_envs ? cfg_getstr(global_envs, C_DEVICE) : NULL;
+            const char* act_env = global_envs ? cfg_getstr(global_envs, C_ACTION) : NULL;
+
+            slog(SLOG_INFO, "welland4: %s exposes a button interrupt endpoint; "
+                 "using the event-driven interrupt path (no SANE polling)",
+                 st->dev->name);
+
+            // release the SANE handle so libusb can claim interface 0
+            sane_close(st->h);
+            st->h = NULL;
+
+            pixma_interrupt_watch(st, vid, pid, script, action_name,
+                                  dev_env, act_env, target_env, timeout);
+
+            // only reached if libusb could not init: fall back to the SANE poll
+            slog(SLOG_WARN, "%s: interrupt path unavailable, reopening for SANE poll",
+                 st->dev->name);
+            if ((status = sane_open(st->dev->name, &st->h)) != SANE_STATUS_GOOD) {
+                slog(SLOG_ERROR, "reopen of %s failed: %s",
+                     st->dev->name, sane_strstatus(status));
+                pthread_exit(NULL);
+            }
+        }
+    }
+
     slog(SLOG_DEBUG, "Start the polling for device %s", st->dev->name);
     while(true) {
         slog(SLOG_DEBUG, "polling thread for %s, before cancellation point", st->dev->name);
