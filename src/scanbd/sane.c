@@ -538,8 +538,10 @@ static void sane_find_matching_options(sane_thread_t* st, cfg_t* sec) {
 
                 st->opts[n].value = get_sane_option_value(st->h, opt);
 
-                slog(SLOG_INFO, "Initial value of option %s is %d", odesc->name,
-                     st->opts[n].value);
+                // same struct-vs-value bug as the poll log: print .num_value
+                // (this branch is BOOL | INT | FIXED), not the whole struct.
+                slog(SLOG_INFO, "Initial value of option %s is %lu", odesc->name,
+                     st->opts[n].value.num_value);
             } // type BOOL | INT || FIXED
             else if (odesc->type == SANE_TYPE_STRING) {
                 bool valid = true;
@@ -892,9 +894,28 @@ static void* sane_poll(void* arg) {
                 }
             }
 
-            slog(SLOG_INFO, "checking option %s number %d (%d) for device %s: value: %d",
-                 odesc->name, st->opts[si].number, si,
-                 st->dev->name, value);
+            // Log the option's REAL value, dereferenced by SANE type.
+            // (value is a sane_opt_value_t struct: the integer/bool/button/
+            //  fixed value lives in .num_value, a string in .str_value.str.
+            //  The old code passed the whole struct to %d, printing garbage
+            //  -- a constant pointer-like number -- which hid the actual
+            //  button state.) The "value: " prefix is unchanged.
+            if (odesc->type == SANE_TYPE_FIXED) {
+                slog(SLOG_INFO, "checking option %s number %d (%d) for device %s: value: %f",
+                     odesc->name, st->opts[si].number, si,
+                     st->dev->name, SANE_UNFIX((SANE_Fixed)value.num_value));
+            }
+            else if (odesc->type == SANE_TYPE_STRING) {
+                slog(SLOG_INFO, "checking option %s number %d (%d) for device %s: value: %s",
+                     odesc->name, st->opts[si].number, si,
+                     st->dev->name, value.str_value.str ? value.str_value.str : "(null)");
+            }
+            else {
+                // SANE_TYPE_BOOL (0/1), SANE_TYPE_INT, SANE_TYPE_BUTTON
+                slog(SLOG_INFO, "checking option %s number %d (%d) for device %s: value: %lu",
+                     odesc->name, st->opts[si].number, si,
+                     st->dev->name, value.num_value);
+            }
 
             if ((odesc->type == SANE_TYPE_BOOL) || (odesc->type == SANE_TYPE_INT) ||
                     (odesc->type == SANE_TYPE_FIXED) || (odesc->type == SANE_TYPE_BUTTON)) {

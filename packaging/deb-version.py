@@ -24,7 +24,7 @@ CHANGELOG = REPO / "debian" / "changelog"
 SOURCE = "scanbd"
 # upstream release this repo packages (Debian's scanbd 1.5.1-7 sources)
 UPSTREAM_VERSION = "1.5.1"
-WELLAND_REV = "1"
+WELLAND_REV = "2"
 MAINTAINER = "Tim 'mithro' Ansell <me@mith.ro>"
 
 
@@ -51,7 +51,10 @@ def write_changelog():
         f"  * Fix physical scanner button presses never firing an action with the\n"
         f"    SANE pixma backend (Canon PIXMA / CanoScan, e.g. LiDE 400): the poll\n"
         f"    loop now SET_VALUEs the backend's \"button-update\" option to refresh\n"
-        f"    the cached button/event state before reading the monitored options.\n\n"
+        f"    the cached button/event state before reading the monitored options.\n"
+        f"  * Fix the debug poll log printing a garbage pointer instead of the\n"
+        f"    option's real value: it passed the whole sane_opt_value_t struct to\n"
+        f"    %d; now dereferenced by SANE type (INT/BOOL/BUTTON, FIXED, STRING).\n\n"
         f" -- {MAINTAINER}  {date}\n"
     )
 
