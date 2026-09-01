@@ -1,16 +1,21 @@
 name: Build deb + publish apt repo
 
 # Builds the welland patched scanbd deb (fixes pixma button presses never
-# firing an action) on native arm64 + amd64 runners, then publishes a
-# GPG-signed flat apt repo to GitHub Pages at https://mithro.github.io/scanbd/.
+# firing an action) for trixie and sid on amd64, arm64, armhf and riscv64, then
+# publishes a GPG-signed flat apt repo per suite to GitHub Pages.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  pull_request:
 
+# A reusable workflow cannot escalate beyond the permissions its caller holds,
+# so the Pages permissions the publish job needs are granted here.
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 jobs:
   build-deb:
