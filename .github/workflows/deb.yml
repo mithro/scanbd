@@ -1,146 +1,67 @@
 name: Build deb + publish apt repo
 
 # Builds the welland patched scanbd deb (fixes pixma button presses never
-# firing an action) on native arm64 + amd64 runners, then publishes a
-# GPG-signed flat apt repo to GitHub Pages at https://mithro.github.io/scanbd/.
+# firing an action) for trixie and sid on amd64, arm64, armhf and riscv64, then
+# publishes a GPG-signed flat apt repo per suite to GitHub Pages.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  pull_request:
 
+# Least privilege by default: only the publish job below raises this, and only
+# for itself. The build jobs run Docker and clone third-party sources, so they
+# should never hold a token that can write to Pages.
 permissions:
   contents: read
 
 jobs:
   build-deb:
+    name: deb (${{ matrix.suite }} ${{ matrix.arch }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-          - arch: amd64
-            runner: ubuntu-latest
-    runs-on: ${{ matrix.runner }}
-    container: debian:trixie
+        suite: [trixie, sid]
+        # riscv64 is an official Debian architecture from trixie onwards, so it
+        # is available for every suite built here.
+        arch: [amd64, arm64, armhf, riscv64]
     steps:
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential ca-certificates git dpkg-dev debhelper \
-            pkg-config libsane-dev libconfuse-dev libudev-dev libdbus-1-dev \
-            libusb-1.0-0-dev python3
-
       - uses: actions/checkout@v4
         with:
-          ref: main
-          fetch-depth: 0
+          fetch-depth: 0 # full history + tags so deb-version.py can describe
 
-      - name: Trust repo directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Write changelog version
-        run: python3 packaging/deb-version.py --write-changelog
-
-      - name: Show what we are building
-        run: |
-          echo "source HEAD: $(git rev-parse --short HEAD)"
-          echo "version:     $(dpkg-parsechangelog -S Version)"
-
-      - name: Build package (binary-only)
-        run: dpkg-buildpackage -b -us -uc
-
-      - name: Collect debs
-        run: |
-          mkdir -p built-debs
-          cp ../*.deb built-debs/
-          ls -l built-debs/
+      - uses: mithro/apt-repo-action/build-deb@main
+        with:
+          suite: ${{ matrix.suite }}
+          arch: ${{ matrix.arch }}
+          build-deps: >-
+            pkg-config libsane-dev libconfuse-dev libudev-dev libdbus-1-dev libusb-1.0-0-dev
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.arch }}
-          path: built-debs/
+          name: debs-${{ matrix.suite }}-${{ matrix.arch }}
+          path: built-debs/*.deb
+          if-no-files-found: error
 
   publish-apt:
-    needs: build-deb
-    runs-on: ubuntu-latest
+    # Scoped to this job alone. A job calling a reusable workflow sets the
+    # maximum permissions available to it, so the elevated Pages scopes stay
+    # here rather than applying to the whole workflow.
     permissions:
+      contents: read
       pages: write
       id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: debs-*
-          merge-multiple: true
-          path: apt-repo/
-
-      - name: Generate apt repo metadata
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils
-          cd apt-repo
-          dpkg-scanpackages --multiversion . > Packages
-          gzip -k Packages
-          cat > Release <<EOF
-          Origin: mithro-scanbd
-          Label: mithro-scanbd
-          Suite: stable
-          Codename: trixie
-          Architectures: amd64 arm64 all
-          Components: main
-          Description: scanbd 1.5.1 with the welland pixma button-fix (arm64, amd64)
-          EOF
-          apt-ftparchive release . >> Release
-
-      - name: Sign repo
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-        if: env.GPG_PRIVATE_KEY != ''
-        run: |
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          cd apt-repo
-          gpg --batch --yes --armor --detach-sign --output Release.gpg Release
-          gpg --batch --yes --armor --clearsign --output InRelease Release
-          gpg --batch --yes --armor --export > scanbd.gpg
-
-      - name: Create index page
-        run: |
-          cat > apt-repo/index.html <<'HTMLEOF'
-          <!DOCTYPE html>
-          <html><head><meta charset="utf-8"><title>mithro scanbd apt repository</title></head>
-          <body>
-          <h1>mithro scanbd apt repository</h1>
-          <p>A patched build of <a href="http://scanbd.sf.net/">scanbd</a> 1.5.1
-          (Debian 1.5.1-7 sources) that fixes physical scanner button presses
-          never firing an action with the SANE <b>pixma</b> backend
-          (Canon PIXMA / CanoScan, e.g. the LiDE 400). arm64 + amd64.</p>
-          <h2>Setup</h2>
-          <pre>
-          sudo install -d -m 0755 /etc/apt/keyrings
-          curl -fsSL https://mithro.github.io/scanbd/scanbd.gpg \
-            | sudo tee /etc/apt/keyrings/mithro-scanbd.gpg > /dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/mithro-scanbd.gpg] https://mithro.github.io/scanbd/ ./" \
-            | sudo tee /etc/apt/sources.list.d/mithro-scanbd.list
-          sudo apt update
-          sudo apt install scanbd
-          </pre>
-          <p>Files: <a href="Packages">Packages</a> &middot;
-          <a href="Release">Release</a> &middot;
-          <a href="InRelease">InRelease</a> &middot;
-          <a href="scanbd.gpg">signing key</a></p>
-          </body></html>
-          HTMLEOF
-          sed -i 's/^          //' apt-repo/index.html
-          ls -l apt-repo/
-
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: apt-repo/
-      - id: deploy
-        uses: actions/deploy-pages@v4
+    # Build on PRs to validate, but never publish from one.
+    if: github.event_name != 'pull_request'
+    needs: build-deb
+    uses: mithro/apt-repo-action/.github/workflows/publish-apt.yml@main
+    with:
+      suites: "trixie sid"
+      architectures: "amd64 arm64 armhf riscv64"
+      origin: scanbd
+      description: "Welland patched scanbd (SANE button daemon)"
+      keyring-name: scanbd.gpg
+    secrets:
+      gpg-private-key: ${{ secrets.APT_GPG_PRIVATE_KEY }}
