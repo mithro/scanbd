@@ -62,11 +62,16 @@ unrelated scanner action (calibrate, etc.) is triggered.
 sudo install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://mithro.github.io/scanbd/scanbd.gpg \
   | sudo tee /etc/apt/keyrings/mithro-scanbd.gpg > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/mithro-scanbd.gpg] https://mithro.github.io/scanbd/ ./" \
+echo "deb [signed-by=/etc/apt/keyrings/mithro-scanbd.gpg] https://mithro.github.io/scanbd/trixie/ ./" \
   | sudo tee /etc/apt/sources.list.d/mithro-scanbd.list
 sudo apt update
 sudo apt install scanbd
 ```
+
+Each suite (`trixie/`, `sid/`) is its own flat repository, so the URL must name
+one and keep the trailing `./`. The repository root carries no `Packages` file,
+so a source line pointing at it fails `apt update` with a 404. On sid, swap
+`trixie/` for `sid/`.
 
 The package version is `1.5.1+welland1`. The `+welland<N>` local suffix sorts
 **above** Debian's `1.5.1-7` (so this build installs over it) and is cleanly
