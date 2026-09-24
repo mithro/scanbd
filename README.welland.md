@@ -3,7 +3,7 @@
 This repo (`main`) packages a **patched build of scanbd 1.5.1** (Debian's
 `scanbd 1.5.1-7` sources, re-homed as a `3.0 (native)` package) as a
 GPG-signed Debian apt repository for **arm64** and **amd64**, served from
-GitHub Pages at <https://mithro.github.io/scanbd/>.
+GitHub Pages at <https://mith.ro/scanbd/>.
 
 scanbd is licensed **GPL-2+** (upstream © 2008–2017 Wilhelm Meier); this build
 keeps that license. Only the packaging (`debian/`, `packaging/`) and one C
@@ -60,15 +60,15 @@ unrelated scanner action (calibrate, etc.) is triggered.
 
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://mithro.github.io/scanbd/scanbd.gpg \
+curl -fsSL https://mith.ro/scanbd/scanbd.gpg \
   | sudo tee /etc/apt/keyrings/scanbd.gpg > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/scanbd.gpg] https://mithro.github.io/scanbd/trixie/ ./" \
+echo "deb [signed-by=/etc/apt/keyrings/scanbd.gpg] https://mith.ro/scanbd/trixie/ ./" \
   | sudo tee /etc/apt/sources.list.d/scanbd.list
 sudo apt update
 sudo apt install scanbd
 ```
 
-On sid, use `https://mithro.github.io/scanbd/sid/` instead.
+On sid, use `https://mith.ro/scanbd/sid/` instead.
 
 The package version is `1.5.1+welland1`. The `+welland<N>` local suffix sorts
 **above** Debian's `1.5.1-7` (so this build installs over it) and is cleanly
