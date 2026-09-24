@@ -60,8 +60,6 @@ jobs:
     with:
       suites: "trixie sid"
       architectures: "amd64 arm64 armhf riscv64"
-      origin: scanbd
       description: "Welland patched scanbd (SANE button daemon)"
-      keyring-name: scanbd.gpg
     secrets:
       gpg-private-key: ${{ secrets.APT_GPG_PRIVATE_KEY }}
