@@ -61,9 +61,9 @@ unrelated scanner action (calibrate, etc.) is triggered.
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://mithro.github.io/scanbd/scanbd.gpg \
-  | sudo tee /etc/apt/keyrings/mithro-scanbd.gpg > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/mithro-scanbd.gpg] https://mithro.github.io/scanbd/trixie/ ./" \
-  | sudo tee /etc/apt/sources.list.d/mithro-scanbd.list
+  | sudo tee /etc/apt/keyrings/scanbd.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/scanbd.gpg] https://mithro.github.io/scanbd/trixie/ ./" \
+  | sudo tee /etc/apt/sources.list.d/scanbd.list
 sudo apt update
 sudo apt install scanbd
 ```
