@@ -1,0 +1,7 @@
+# What kind of packaging repository this is, and why it differs from the
+# defaults: mithro/apt-repo-action's docs/packaging.md ("The declaration").
+kind = "A"
+upstream = "https://sourceforge.net/projects/scanbd/"
+
+[exceptions]
+PKG-VERSION = "epoch 1: the count-based version sorts below the published 1.5.1+welland4"
